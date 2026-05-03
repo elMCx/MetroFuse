@@ -40,6 +40,9 @@ class AppleMusicWrapperDataSource(
         val length = try {
             openStream(request, dataSpec)
         } catch (error: Throwable) {
+            if (AppleMusicDecryptPipeline.isAlacStartupTimeout(error)) {
+                throw IOException("Apple Music wrapper ALAC failed: ${error.message ?: error.javaClass.simpleName}", error)
+            }
             retryWithFreshM3u8(error)
                 ?: throw IOException("Apple Music wrapper ALAC failed: ${error.message ?: error.javaClass.simpleName}", error)
         }
@@ -77,6 +80,9 @@ class AppleMusicWrapperDataSource(
         val read = try {
             currentStream?.read(buffer, offset, length)
         } catch (error: Throwable) {
+            if (AppleMusicDecryptPipeline.isAlacStartupTimeout(error)) {
+                throw IOException("Apple Music wrapper ALAC failed: ${error.message ?: error.javaClass.simpleName}", error)
+            }
             if (retryWithFreshM3u8(error) != null) {
                 currentStream?.read(buffer, offset, length)
             } else {

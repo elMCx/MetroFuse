@@ -106,8 +106,8 @@ object QobuzAudioProvider {
         var lastError: String? = null
         for (quality in buildQualityFallbackOrder(query.qualityCode)) {
             val attempt = when (query.backend) {
-                ResolverBackend.JUMO -> requestJumoStream(track, quality, resolverRegion)
-                ResolverBackend.SQUID -> requestSquidStream(track, query.countryCode, quality)
+                ResolverBackend.JUMO -> requestJumoStream(track, quality, resolverRegion, query.durationMs)
+                ResolverBackend.SQUID -> requestSquidStream(track, query.countryCode, quality, query.durationMs)
             }
             attempt.resolved?.let { resolved ->
                 streamCache[streamCacheKey] = resolved
@@ -288,6 +288,7 @@ object QobuzAudioProvider {
         track: MatchedTrack,
         countryCode: String,
         qualityCode: Int,
+        durationMs: Long?,
     ): StreamAttempt {
         val url = "$SQUID_BASE_URL/api/download-music".toHttpUrlOrNull()
             ?.newBuilder()
@@ -327,14 +328,27 @@ object QobuzAudioProvider {
                     return@use StreamAttempt(error = message)
                 }
 
-                val streamUrl = root.optJSONObject("data")?.stringOrNull("url")
+                val data = root.optJSONObject("data")
+                val streamUrl = data?.stringOrNull("url")
                     ?: return@use StreamAttempt(error = "Qobuz did not return a stream URL for quality $qualityCode")
+                val bitDepth = data.intOrNull("bit_depth") ?: track.bitDepth
+                val samplingRate = data.doubleOrNull("sampling_rate") ?: track.samplingRateKhz
+                val lossyBitrate = data.intOrNull("bitrate")
+                    ?: data.intOrNull("bit_rate")
+                    ?: root.intOrNull("bitrate")
+                    ?: root.intOrNull("bit_rate")
+                val losslessBitrate = estimateStreamBitrateFromContentLength(streamUrl, durationMs)
+                    ?: normalizeBitrate(
+                        data.intOrNull("average_bitrate")
+                            ?: root.intOrNull("average_bitrate")
+                    ).takeIf { it > 0 }
                 val format = formatFrom(
                     mimeType = if (qualityCode == 5) "audio/mpeg" else "audio/flac",
-                    bitDepth = track.bitDepth,
-                    samplingRateKhz = track.samplingRateKhz,
-                    bitrate = null,
-                    hires = track.hires || qualityCode >= 7,
+                    bitDepth = bitDepth,
+                    samplingRateKhz = samplingRate,
+                    bitrate = lossyBitrate,
+                    losslessBitrate = losslessBitrate,
+                    hires = track.hires || (bitDepth ?: 0) > 16 || (samplingRate ?: 0.0) > 44.1 || qualityCode >= 7,
                 )
                 StreamAttempt(resolved = format.toResolved(streamUrl, track.trackId))
             }
@@ -347,6 +361,7 @@ object QobuzAudioProvider {
         track: MatchedTrack,
         qualityCode: Int,
         region: String,
+        durationMs: Long?,
     ): StreamAttempt {
         val url = "$JUMO_BASE_URL/fetch".toHttpUrlOrNull()
             ?.newBuilder()
@@ -390,15 +405,17 @@ object QobuzAudioProvider {
                 val samplingRate = root.doubleOrNull("sampling_rate") ?: track.samplingRateKhz
                 val mimeType = root.stringOrNull("mime_type")
                     ?: if (qualityCode == 5) "audio/mpeg" else "audio/flac"
-                val bitrate = root.intOrNull("bitrate")
+                val lossyBitrate = root.intOrNull("bitrate")
                     ?: root.intOrNull("bit_rate")
-                    ?: root.intOrNull("average_bitrate")
+                val losslessBitrate = estimateStreamBitrateFromContentLength(streamUrl, durationMs)
+                    ?: normalizeBitrate(root.intOrNull("average_bitrate")).takeIf { it > 0 }
                 val hires = (bitDepth ?: 0) > 16 || (samplingRate ?: 0.0) > 44.1 || qualityCode >= 7
                 val format = formatFrom(
                     mimeType = mimeType,
                     bitDepth = bitDepth,
                     samplingRateKhz = samplingRate,
-                    bitrate = bitrate,
+                    bitrate = lossyBitrate,
+                    losslessBitrate = losslessBitrate,
                     hires = hires,
                 )
                 StreamAttempt(
@@ -440,15 +457,14 @@ object QobuzAudioProvider {
         bitDepth: Int?,
         samplingRateKhz: Double?,
         bitrate: Int?,
+        losslessBitrate: Int?,
         hires: Boolean,
     ): StreamFormat {
         val lowerMime = mimeType.lowercase(Locale.US)
         val sampleRate = samplingRateKhz
             ?.takeIf { it > 0.0 }
             ?.let { (it * 1000.0).roundToInt() }
-        val normalizedBitrate = bitrate
-            ?.let { if (it in 1..9999) it * 1000 else it }
-            ?: 0
+        val normalizedBitrate = normalizeBitrate(bitrate)
 
         return when {
             lowerMime.contains("mpeg") || lowerMime.contains("mp3") -> StreamFormat(
@@ -467,14 +483,67 @@ object QobuzAudioProvider {
                 sampleRate = sampleRate,
             )
 
-            else -> StreamFormat(
-                label = buildFlacLabel(bitDepth, samplingRateKhz, hires),
-                mimeType = "audio/flac",
-                codecs = "flac",
-                bitrate = normalizedBitrate,
-                sampleRate = sampleRate,
-            )
+            else -> {
+                StreamFormat(
+                    label = buildFlacLabel(bitDepth, samplingRateKhz, hires),
+                    mimeType = "audio/flac",
+                    codecs = "flac",
+                    bitrate = losslessBitrate ?: 0,
+                    sampleRate = sampleRate,
+                )
+            }
         }
+    }
+
+    private fun normalizeBitrate(value: Int?): Int {
+        return value
+            ?.takeIf { it > 0 }
+            ?.let { if (it in 1..9999) it * 1000 else it }
+            ?: 0
+    }
+
+    private fun estimateStreamBitrateFromContentLength(
+        url: String,
+        durationMs: Long?,
+    ): Int? {
+        val safeDuration = durationMs?.takeIf { it > 0L } ?: return null
+        val length = fetchStreamContentLength(url) ?: return null
+        val bitrate = (length * 8L * 1000L) / safeDuration
+        return bitrate
+            .takeIf { it in 32_000L..20_000_000L }
+            ?.coerceAtMost(Int.MAX_VALUE.toLong())
+            ?.toInt()
+    }
+
+    private fun fetchStreamContentLength(url: String): Long? {
+        val httpUrl = url.toHttpUrlOrNull() ?: return null
+        val commonBuilder = Request.Builder()
+            .url(httpUrl)
+            .header("Accept", "*/*")
+            .header("User-Agent", BROWSER_USER_AGENT)
+
+        runCatching {
+            client.newCall(commonBuilder.head().build()).execute().use { response ->
+                if (!response.isSuccessful) return@use null
+                response.header("Content-Length")?.toLongOrNull()?.takeIf { it > 0L }
+            }
+        }.getOrNull()?.let { return it }
+
+        return runCatching {
+            client.newCall(
+                commonBuilder
+                    .get()
+                    .header("Range", "bytes=0-0")
+                    .build()
+            ).execute().use { response ->
+                if (!response.isSuccessful) return@use null
+                response.header("Content-Range")
+                    ?.substringAfterLast('/', missingDelimiterValue = "")
+                    ?.toLongOrNull()
+                    ?.takeIf { it > 0L }
+                    ?: response.header("Content-Length")?.toLongOrNull()?.takeIf { it > 0L && response.code == 206 }
+            }
+        }.getOrNull()
     }
 
     private fun buildFlacLabel(
@@ -631,4 +700,5 @@ object QobuzAudioProvider {
             optString(name).trim().toDoubleOrNull()
         }
     }
+
 }

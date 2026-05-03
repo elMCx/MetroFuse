@@ -29,7 +29,8 @@ object AppleMusicSongResolver {
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(12, TimeUnit.SECONDS)
-        .readTimeout(90, TimeUnit.SECONDS)
+        .readTimeout(25, TimeUnit.SECONDS)
+        .callTimeout(35, TimeUnit.SECONDS)
         .build()
     private val resolvedCache = ConcurrentHashMap<String, Resolved>()
 
@@ -82,7 +83,11 @@ object AppleMusicSongResolver {
             mode = AppleMusicWrapperManagerProvider.WrapperMode.ALAC,
         )
         val quality = runCatching {
-            AppleMusicDecryptPipeline.readAlacQualityMetadata(client, wrapper.url)
+            AppleMusicDecryptPipeline.readAlacQualityMetadata(
+                client = client,
+                initialUrl = wrapper.url,
+                preferFast = true,
+            )
         }.getOrNull()
 
         val mediaUri = AppleMusicWrapperDataSource.buildUri(

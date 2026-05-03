@@ -14,6 +14,7 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
+        maven { setUrl("https://raw.githubusercontent.com/bravepipeproject/maven-repo/master/repository") }
         maven { setUrl("https://jitpack.io") }
         maven { setUrl("https://maven.aliyun.com/repository/public") }
     }

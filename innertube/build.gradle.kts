@@ -29,7 +29,7 @@ dependencies {
     implementation(libs.ktor.serialization.json)
     implementation(libs.ktor.client.encoding)
     implementation(libs.brotli)
-    implementation("com.github.MetrolistGroup:MetrolistExtractor:6305155") {
+    api(libs.bravepipe.extractor) {
         exclude(group = "com.google.protobuf")
     }
     implementation(libs.timber)

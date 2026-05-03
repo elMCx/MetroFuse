@@ -6,6 +6,8 @@
 package com.metrolist.music.ui.player
 
 import android.view.TextureView
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -13,9 +15,14 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
@@ -35,6 +42,13 @@ import com.metrolist.music.utils.spotify.normalizeSpotifyCookieInput
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
+
+private const val CanvasCrossfadeDurationMillis = 650
+
+private data class SpotifyCanvasVideoKey(
+    val url: String,
+    val headers: Map<String, String>,
+)
 
 @Composable
 fun rememberSpotifyCanvasMedia(
@@ -73,15 +87,12 @@ fun SpotifyCanvasVideoBackground(
     shouldPlay: Boolean,
     modifier: Modifier = Modifier,
 ) {
-    val context = LocalContext.current
-    val lifecycleOwner = LocalLifecycleOwner.current
-    val textureView =
-        remember {
-            TextureView(context).apply {
-                isOpaque = false
-                isClickable = false
-                isFocusable = false
-            }
+    val canvasMedia =
+        remember(media.url, media.headers) {
+            SpotifyCanvasVideoKey(
+                url = media.url,
+                headers = media.headers,
+            )
         }
     val okHttpClient =
         remember {
@@ -91,8 +102,112 @@ fun SpotifyCanvasVideoBackground(
                 .followSslRedirects(true)
                 .build()
         }
+
+    var activeMedia by remember { mutableStateOf(canvasMedia) }
+    var outgoingMedia by remember { mutableStateOf<SpotifyCanvasVideoKey?>(null) }
+
+    LaunchedEffect(canvasMedia) {
+        if (canvasMedia != activeMedia) {
+            outgoingMedia = activeMedia
+            activeMedia = canvasMedia
+        }
+    }
+
+    Box(modifier = modifier) {
+        outgoingMedia?.let { media ->
+            key(media) {
+                SpotifyCanvasVideoLayer(
+                    media = media,
+                    okHttpClient = okHttpClient,
+                    shouldPlay = shouldPlay,
+                    alpha = 1f,
+                    onReady = {},
+                )
+            }
+        }
+
+        key(activeMedia) {
+            ActiveSpotifyCanvasVideoLayer(
+                media = activeMedia,
+                okHttpClient = okHttpClient,
+                shouldPlay = shouldPlay,
+                fadeIn = outgoingMedia != null,
+                onFadeComplete = {
+                    if (activeMedia == it) {
+                        outgoingMedia = null
+                    }
+                },
+            )
+        }
+
+        Box(
+            modifier =
+                Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.16f)),
+        )
+    }
+}
+
+@Composable
+private fun ActiveSpotifyCanvasVideoLayer(
+    media: SpotifyCanvasVideoKey,
+    okHttpClient: OkHttpClient,
+    shouldPlay: Boolean,
+    fadeIn: Boolean,
+    onFadeComplete: (SpotifyCanvasVideoKey) -> Unit,
+) {
+    var isReady by remember(media) { mutableStateOf(!fadeIn) }
+    val currentOnFadeComplete by rememberUpdatedState(onFadeComplete)
+    val alpha by animateFloatAsState(
+        targetValue = if (isReady) 1f else 0f,
+        animationSpec = tween(CanvasCrossfadeDurationMillis),
+        label = "SpotifyCanvasCrossfade",
+        finishedListener = { value ->
+            if (value == 1f && isReady) {
+                currentOnFadeComplete(media)
+            }
+        },
+    )
+
+    LaunchedEffect(fadeIn) {
+        if (!fadeIn) {
+            isReady = true
+        }
+    }
+
+    SpotifyCanvasVideoLayer(
+        media = media,
+        okHttpClient = okHttpClient,
+        shouldPlay = shouldPlay,
+        alpha = alpha,
+        onReady = { isReady = true },
+    )
+}
+
+@Composable
+private fun SpotifyCanvasVideoLayer(
+    media: SpotifyCanvasVideoKey,
+    okHttpClient: OkHttpClient,
+    shouldPlay: Boolean,
+    alpha: Float,
+    onReady: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val currentShouldPlay by rememberUpdatedState(shouldPlay)
+    val currentOnReady by rememberUpdatedState(onReady)
+    val textureView =
+        remember(media) {
+            TextureView(context).apply {
+                isOpaque = false
+                isClickable = false
+                isFocusable = false
+            }
+        }
     val player =
-        remember(media.url, media.headers) {
+        remember(media) {
             val dataSourceFactory =
                 OkHttpDataSource
                     .Factory(okHttpClient)
@@ -117,13 +232,26 @@ fun SpotifyCanvasVideoBackground(
         val observer =
             LifecycleEventObserver { _, event ->
                 when (event) {
-                    Lifecycle.Event.ON_RESUME -> if (shouldPlay) player.play()
+                    Lifecycle.Event.ON_RESUME -> if (currentShouldPlay) player.play()
                     Lifecycle.Event.ON_PAUSE -> player.pause()
                     else -> Unit
                 }
             }
+        val playerListener =
+            object : Player.Listener {
+                override fun onPlaybackStateChanged(playbackState: Int) {
+                    if (playbackState == Player.STATE_READY) {
+                        currentOnReady()
+                    }
+                }
+            }
+        player.addListener(playerListener)
         lifecycleOwner.lifecycle.addObserver(observer)
+        if (player.playbackState == Player.STATE_READY) {
+            currentOnReady()
+        }
         onDispose {
+            player.removeListener(playerListener)
             lifecycleOwner.lifecycle.removeObserver(observer)
             player.clearVideoTextureView(textureView)
             player.release()
@@ -139,16 +267,11 @@ fun SpotifyCanvasVideoBackground(
         }
     }
 
-    Box(modifier = modifier) {
-        AndroidView(
-            factory = { textureView },
-            modifier = Modifier.fillMaxSize(),
-        )
-        Box(
-            modifier =
-                Modifier
-                    .fillMaxSize()
-                    .background(Color.Black.copy(alpha = 0.16f)),
-        )
-    }
+    AndroidView(
+        factory = { textureView },
+        modifier =
+            modifier
+                .fillMaxSize()
+                .alpha(alpha),
+    )
 }

@@ -12,11 +12,14 @@ import java.util.concurrent.TimeUnit
 object AppleMusicWrapperManagerProvider {
     private const val DECRYPT_BATCH_SIZE = 96
     private const val DECRYPT_RETRY_BATCH_SIZE = 12
-    private const val DECRYPT_MISSING_RETRY_COUNT = 10
-    private const val DECRYPT_SINGLE_SAMPLE_DUPLICATES = 6
-    private const val DECRYPT_FINAL_SINGLE_ROUNDS = 6
-    private const val DECRYPT_MISSING_RETRY_DELAY_MS = 180L
+    private const val DECRYPT_MISSING_RETRY_COUNT = 4
+    private const val DECRYPT_SINGLE_SAMPLE_DUPLICATES = 5
+    private const val DECRYPT_FINAL_SINGLE_ROUNDS = 2
+    private const val DECRYPT_MISSING_RETRY_DELAY_MS = 140L
     private const val MIN_UNDECRYPTED_COMPARE_BYTES = 32
+    private const val WRAPPER_CONNECT_TIMEOUT_SECONDS = 10L
+    private const val WRAPPER_READ_TIMEOUT_SECONDS = 25L
+    private const val WRAPPER_CALL_TIMEOUT_SECONDS = 30L
 
     enum class WrapperMode(
         val idSuffix: String,
@@ -62,6 +65,16 @@ object AppleMusicWrapperManagerProvider {
         val data: ByteArray,
     )
 
+    interface SampleDecryptClient : AutoCloseable {
+        fun decryptSegment(
+            adamId: String,
+            key: String,
+            samples: List<DecryptSample>,
+        ): Map<Int, ByteArray>
+
+        override fun close() = Unit
+    }
+
     private data class DecryptReplySample(
         val adamId: String,
         val key: String,
@@ -71,14 +84,27 @@ object AppleMusicWrapperManagerProvider {
 
     private val grpcMediaType = "application/grpc".toMediaType()
     private val client = OkHttpClient.Builder()
-        .connectTimeout(12, TimeUnit.SECONDS)
-        .readTimeout(90, TimeUnit.SECONDS)
+        .connectTimeout(WRAPPER_CONNECT_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+        .readTimeout(WRAPPER_READ_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+        .callTimeout(WRAPPER_CALL_TIMEOUT_SECONDS, TimeUnit.SECONDS)
         .build()
     private val h2cGrpcClient = OkHttpClient.Builder()
         .protocols(listOf(Protocol.H2_PRIOR_KNOWLEDGE))
-        .connectTimeout(12, TimeUnit.SECONDS)
-        .readTimeout(90, TimeUnit.SECONDS)
+        .connectTimeout(WRAPPER_CONNECT_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+        .readTimeout(WRAPPER_READ_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+        .callTimeout(WRAPPER_CALL_TIMEOUT_SECONDS, TimeUnit.SECONDS)
         .build()
+    private val defaultGrpcClients = GrpcClients(client, h2cGrpcClient)
+
+    private data class GrpcClients(
+        val https: OkHttpClient,
+        val h2c: OkHttpClient,
+    ) {
+        fun cancelAll() {
+            https.dispatcher.cancelAll()
+            h2c.dispatcher.cancelAll()
+        }
+    }
 
     fun normalizeHost(raw: String?): String {
         return raw.orEmpty()
@@ -162,6 +188,14 @@ object AppleMusicWrapperManagerProvider {
         )
     }
 
+    fun openSampleDecryptClient(
+        host: String,
+        secure: Boolean,
+        mode: WrapperMode,
+    ): SampleDecryptClient {
+        return BatchSampleDecryptClient(host = host, secure = secure, mode = mode)
+    }
+
     fun requireDirectPlayableHls(m3u8Url: String, mode: WrapperMode): String {
         if (mode == WrapperMode.ALAC) {
             return m3u8Url
@@ -198,6 +232,26 @@ object AppleMusicWrapperManagerProvider {
         key: String,
         samples: List<DecryptSample>,
     ): Map<Int, ByteArray> {
+        return decryptSegmentWithClients(
+            host = host,
+            secure = secure,
+            mode = mode,
+            adamId = adamId,
+            key = key,
+            samples = samples,
+            grpcClients = defaultGrpcClients,
+        )
+    }
+
+    private fun decryptSegmentWithClients(
+        host: String,
+        secure: Boolean,
+        mode: WrapperMode,
+        adamId: String,
+        key: String,
+        samples: List<DecryptSample>,
+        grpcClients: GrpcClients,
+    ): Map<Int, ByteArray> {
         val candidates = buildInstanceCandidates(host, secure)
         val errors = mutableListOf<String>()
         candidates.forEach { (candidateHost, candidateSecure) ->
@@ -208,7 +262,8 @@ object AppleMusicWrapperManagerProvider {
                     mode = mode,
                     adamId = adamId,
                     key = key,
-                    samples = samples
+                    samples = samples,
+                    grpcClients = grpcClients,
                 )
             }.onSuccess { return it }
                 .onFailure { error ->
@@ -221,6 +276,45 @@ object AppleMusicWrapperManagerProvider {
         )
     }
 
+    private class BatchSampleDecryptClient(
+        private val host: String,
+        private val secure: Boolean,
+        private val mode: WrapperMode,
+    ) : SampleDecryptClient {
+        @Volatile
+        private var closed = false
+        private val grpcClients = GrpcClients(
+            https = client.newBuilder().build(),
+            h2c = h2cGrpcClient.newBuilder().build(),
+        )
+
+        override fun decryptSegment(
+            adamId: String,
+            key: String,
+            samples: List<DecryptSample>,
+        ): Map<Int, ByteArray> {
+            ensureOpen()
+            return decryptSegmentWithClients(
+                host = host,
+                secure = secure,
+                mode = mode,
+                adamId = adamId,
+                key = key,
+                samples = samples,
+                grpcClients = grpcClients,
+            )
+        }
+
+        override fun close() {
+            closed = true
+            grpcClients.cancelAll()
+        }
+
+        private fun ensureOpen() {
+            if (closed) throw WrapperManagerException("ALAC decrypt client was closed")
+        }
+    }
+
     private fun decryptSegmentOnInstance(
         host: String,
         secure: Boolean,
@@ -228,6 +322,7 @@ object AppleMusicWrapperManagerProvider {
         adamId: String,
         key: String,
         samples: List<DecryptSample>,
+        grpcClients: GrpcClients,
     ): Map<Int, ByteArray> {
         if (samples.isEmpty()) return emptyMap()
         val decryptedByIndex = linkedMapOf<Int, ByteArray>()
@@ -241,7 +336,8 @@ object AppleMusicWrapperManagerProvider {
                     mode = mode,
                     adamId = adamId,
                     key = key,
-                    samples = chunk
+                    samples = chunk,
+                    grpcClients = grpcClients,
                 )
             )
         }
@@ -264,7 +360,8 @@ object AppleMusicWrapperManagerProvider {
                             mode = mode,
                             adamId = adamId,
                             key = key,
-                            samples = retryChunk
+                            samples = retryChunk,
+                            grpcClients = grpcClients,
                         )
                     )
                 }.getOrNull()?.let { decryptedByIndex += it }
@@ -280,7 +377,8 @@ object AppleMusicWrapperManagerProvider {
                         adamId = adamId,
                         key = key,
                         sample = sample,
-                        duplicates = DECRYPT_SINGLE_SAMPLE_DUPLICATES + attempt.coerceAtMost(4)
+                        duplicates = DECRYPT_SINGLE_SAMPLE_DUPLICATES + attempt.coerceAtMost(4),
+                        grpcClients = grpcClients,
                     )
                 }.getOrNull()?.takeIf { sample.isUsableDecryptedSample(it) }?.let { decrypted ->
                     decryptedByIndex[sample.sampleIndex] = decrypted
@@ -301,7 +399,8 @@ object AppleMusicWrapperManagerProvider {
                         adamId = adamId,
                         key = key,
                         sample = sample,
-                        duplicates = DECRYPT_SINGLE_SAMPLE_DUPLICATES + DECRYPT_FINAL_SINGLE_ROUNDS
+                        duplicates = DECRYPT_SINGLE_SAMPLE_DUPLICATES + DECRYPT_FINAL_SINGLE_ROUNDS,
+                        grpcClients = grpcClients,
                     )
                 }.getOrNull()?.takeIf { sample.isUsableDecryptedSample(it) }?.let { decrypted ->
                     decryptedByIndex[sample.sampleIndex] = decrypted
@@ -347,6 +446,7 @@ object AppleMusicWrapperManagerProvider {
         key: String,
         sample: DecryptSample,
         duplicates: Int = DECRYPT_SINGLE_SAMPLE_DUPLICATES,
+        grpcClients: GrpcClients = defaultGrpcClients,
     ): ByteArray? {
         val repeatedSample = List(duplicates.coerceAtLeast(1)) { sample }
         return decryptSampleBatch(
@@ -355,7 +455,8 @@ object AppleMusicWrapperManagerProvider {
             mode = mode,
             adamId = adamId,
             key = key,
-            samples = repeatedSample
+            samples = repeatedSample,
+            grpcClients = grpcClients,
         )[sample.sampleIndex]
     }
 
@@ -366,6 +467,7 @@ object AppleMusicWrapperManagerProvider {
         adamId: String,
         key: String,
         samples: List<DecryptSample>,
+        grpcClients: GrpcClients = defaultGrpcClients,
     ): Map<Int, ByteArray> {
         if (samples.isEmpty()) return emptyMap()
         val framesToSend = samples + samples.last()
@@ -385,7 +487,8 @@ object AppleMusicWrapperManagerProvider {
         }.toByteArray()
         return callStreaming(
             url = buildUrl(host, secure, mode.decryptRpcPath),
-            framedPayload = framedPayload
+            framedPayload = framedPayload,
+            grpcClients = grpcClients,
         ).map { parseDecryptReply(it) }
             .associate { it.sampleIndex to it.data }
     }
@@ -432,7 +535,11 @@ object AppleMusicWrapperManagerProvider {
             ?: throw WrapperManagerException("wrapper-manager returned no gRPC messages")
     }
 
-    private fun callStreaming(url: String, framedPayload: ByteArray): List<ByteArray> {
+    private fun callStreaming(
+        url: String,
+        framedPayload: ByteArray,
+        grpcClients: GrpcClients = defaultGrpcClients,
+    ): List<ByteArray> {
         val request = Request.Builder()
             .url(url)
             .header("Content-Type", "application/grpc")
@@ -441,7 +548,7 @@ object AppleMusicWrapperManagerProvider {
             .post(framedPayload.toRequestBody(grpcMediaType))
             .build()
 
-        val grpcClient = if (request.url.scheme == "http") h2cGrpcClient else client
+        val grpcClient = if (request.url.scheme == "http") grpcClients.h2c else grpcClients.https
         grpcClient.newCall(request).execute().use { response ->
             if (!response.isSuccessful) {
                 val preview = response.body?.string().orEmpty().take(240)
