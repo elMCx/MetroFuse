@@ -150,6 +150,8 @@ import com.metrolist.music.constants.InstagramCookieKey
 import com.metrolist.music.constants.InstagramAppIdKey
 import com.metrolist.music.constants.InstagramUserAgentKey
 import com.metrolist.music.constants.InstagramUuidKey
+import com.metrolist.music.constants.TidalArtworkFallbackEnabledKey
+import com.metrolist.music.constants.TidalCookieKey
 import com.metrolist.music.constants.PlayerVolumeKey
 import com.metrolist.music.constants.PreventDuplicateTracksInQueueKey
 import com.metrolist.music.constants.QobuzBackend
@@ -206,6 +208,7 @@ import com.metrolist.music.playback.queues.Queue
 import com.metrolist.music.playback.queues.YouTubeQueue
 import com.metrolist.music.playback.queues.filterExplicit
 import com.metrolist.music.playback.queues.filterVideoSongs
+import com.metrolist.music.providers.TidalHomeFeedProvider
 import com.metrolist.music.qobuz.QobuzAudioProvider
 import com.metrolist.music.soundcloud.SoundCloudAudioProvider
 import com.metrolist.music.instagram.InstagramAudioProvider
@@ -339,6 +342,7 @@ class MusicService :
 
     val currentMediaMetadata = MutableStateFlow<com.metrolist.music.models.MediaMetadata?>(null)
     val currentAppleCanvasUrl = MutableStateFlow<String?>(null)
+    val currentTidalArtworkUrl = MutableStateFlow<String?>(null)
     private val currentSong =
         currentMediaMetadata
             .flatMapLatest { mediaMetadata ->
@@ -694,11 +698,17 @@ class MusicService :
         // Collecting this flow activates the internal map that updates lyricsProviders in LyricsHelper
         lyricsHelper.preferred.collectLatest(scope) {}
 
-        currentMediaMetadata
-            .distinctUntilChangedBy { it?.id }
-            .collectLatest(scope) { metadata ->
+        combine(
+            currentMediaMetadata.distinctUntilChangedBy { it?.id },
+            dataStore.data
+                .map { it[TidalArtworkFallbackEnabledKey] ?: false }
+                .distinctUntilChanged(),
+        ) { metadata, tidalArtworkFallbackEnabled ->
+            metadata to tidalArtworkFallbackEnabled
+        }.collectLatest(scope) { (metadata, tidalArtworkFallbackEnabled) ->
                 markAppleWrapperFormat(metadata)
                 updateAppleCanvas(metadata)
+                updateTidalArtwork(metadata, tidalArtworkFallbackEnabled)
             }
 
         // 4. Watch for EQ profile changes
@@ -4075,6 +4085,30 @@ class MusicService :
 
         if (currentMediaMetadata.value?.id == metadata.id) {
             currentAppleCanvasUrl.value = resolved
+        }
+    }
+
+    private suspend fun updateTidalArtwork(
+        metadata: com.metrolist.music.models.MediaMetadata?,
+        enabled: Boolean,
+    ) {
+        currentTidalArtworkUrl.value = null
+        if (!enabled || metadata == null || metadata.isEpisode || metadata.isVideoSong) return
+        if (!currentAppleCanvasUrl.value.isNullOrBlank()) return
+
+        val artist = metadata.artists.firstOrNull()?.name?.takeIf { it.isNotBlank() }
+        val resolved =
+            withTimeoutOrNull(2_500L) {
+                TidalHomeFeedProvider.resolveAlbumArtwork(
+                    title = metadata.title,
+                    artist = artist,
+                    album = metadata.album?.title,
+                    cookie = dataStore.get(TidalCookieKey, ""),
+                )
+            }?.takeIf { it.isNotBlank() }
+
+        if (currentMediaMetadata.value?.id == metadata.id && currentAppleCanvasUrl.value.isNullOrBlank()) {
+            currentTidalArtworkUrl.value = resolved
         }
     }
 

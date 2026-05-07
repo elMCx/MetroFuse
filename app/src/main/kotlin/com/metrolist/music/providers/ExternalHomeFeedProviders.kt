@@ -84,6 +84,50 @@ object TidalHomeFeedProvider {
             }.getOrNull()?.sections?.isNotEmpty() == true
         }
 
+    suspend fun resolveAlbumArtwork(
+        title: String,
+        artist: String?,
+        album: String?,
+        cookie: String = "",
+    ): String? =
+        runCatching {
+            withContext(Dispatchers.IO) {
+                val normalizedTitle = title.normalizedArtworkMatch()
+                if (normalizedTitle.isBlank()) return@withContext null
+
+                val auth = tidalAuthInput(cookie)
+                val query =
+                    listOfNotNull(
+                        title.takeIf { it.isNotBlank() },
+                        artist?.takeIf { it.isNotBlank() },
+                        album?.takeIf { it.isNotBlank() },
+                    ).joinToString(" ")
+
+                val responseJson =
+                    client.newCall(
+                        tidalRequest(
+                            path = "v1/search",
+                            params =
+                                mapOf(
+                                    "query" to query,
+                                    "types" to "TRACKS,ALBUMS",
+                                    "limit" to "10",
+                                ),
+                            auth = auth,
+                            authenticated = auth.hasUserAuth,
+                        ),
+                    ).execute().use { response ->
+                        json.parseToJsonElement(response.requireTidalBody("TIDAL artwork search")).jsonObject
+                    }
+
+                responseJson.bestTidalArtworkCandidate(
+                    title = title,
+                    artist = artist,
+                    album = album,
+                )
+            }
+        }.getOrNull()
+
     suspend fun loadPlaylist(
         playlistId: String,
         cookie: String = "",
@@ -874,21 +918,129 @@ object TidalHomeFeedProvider {
             toInt()
         }
 
-    private fun JsonObject.tidalArtworkUrl(): String? =
-        string("squareImage")?.tidalImageUrl()
-            ?: string("image")?.tidalImageUrl()
-            ?: string("cover")?.tidalImageUrl()
-            ?: string("picture")?.tidalImageUrl()
-            ?: obj("images")?.obj("MEDIUM")?.string("url")?.tidalImageUrl()
+    private fun JsonObject.tidalArtworkUrl(size: String = "640x640"): String? =
+        string("squareImage")?.tidalImageUrl(size)
+            ?: string("image")?.tidalImageUrl(size)
+            ?: string("cover")?.tidalImageUrl(size)
+            ?: string("picture")?.tidalImageUrl(size)
+            ?: obj("images")?.obj("MEDIUM")?.string("url")?.tidalImageUrl(size)
             ?: array("mixImages")
                 ?.mapNotNull { it.obj }
                 ?.firstOrNull { it.string("size") == "MEDIUM" }
                 ?.string("url")
-                ?.tidalImageUrl()
+                ?.tidalImageUrl(size)
             ?: array("mixImages")
                 ?.firstNotNullOfOrNull { it.obj?.string("url") }
-                ?.tidalImageUrl()
-            ?: obj("album")?.tidalArtworkUrl()
+                ?.tidalImageUrl(size)
+            ?: obj("album")?.tidalArtworkUrl(size)
+
+    private fun JsonObject.bestTidalArtworkCandidate(
+        title: String,
+        artist: String?,
+        album: String?,
+    ): String? {
+        val normalizedTitle = title.normalizedArtworkMatch()
+        val normalizedArtist = artist?.normalizedArtworkMatch().orEmpty()
+        val normalizedAlbum = album?.normalizedArtworkMatch().orEmpty()
+        val threshold = if (normalizedArtist.isBlank()) 5 else 8
+
+        val trackCandidates =
+            obj("tracks")
+                ?.array("items")
+                .orEmpty()
+                .mapNotNull { element ->
+                    val track = element.obj?.tidalWrappedContent() ?: return@mapNotNull null
+                    val artwork =
+                        track.obj("album")?.tidalArtworkUrl("1280x1280")
+                            ?: track.tidalArtworkUrl("1280x1280")
+                            ?: return@mapNotNull null
+                    TidalArtworkCandidate(
+                        artwork = artwork,
+                        score =
+                            track.tidalArtworkScore(
+                                normalizedTitle = normalizedTitle,
+                                normalizedArtist = normalizedArtist,
+                                normalizedAlbum = normalizedAlbum,
+                            ),
+                    )
+                }
+
+        val albumCandidates =
+            obj("albums")
+                ?.array("items")
+                .orEmpty()
+                .mapNotNull { element ->
+                    val tidalAlbum = element.obj?.tidalWrappedContent() ?: return@mapNotNull null
+                    val artwork = tidalAlbum.tidalArtworkUrl("1280x1280") ?: return@mapNotNull null
+                    TidalArtworkCandidate(
+                        artwork = artwork,
+                        score =
+                            tidalAlbum.tidalArtworkScore(
+                                normalizedTitle = normalizedAlbum.ifBlank { normalizedTitle },
+                                normalizedArtist = normalizedArtist,
+                                normalizedAlbum = normalizedAlbum,
+                            ),
+                    )
+                }
+
+        return (trackCandidates + albumCandidates)
+            .maxByOrNull { it.score }
+            ?.takeIf { it.score >= threshold }
+            ?.artwork
+    }
+
+    private data class TidalArtworkCandidate(
+        val artwork: String,
+        val score: Int,
+    )
+
+    private fun JsonObject.tidalArtworkScore(
+        normalizedTitle: String,
+        normalizedArtist: String,
+        normalizedAlbum: String,
+    ): Int {
+        val itemTitle = tidalTitle()?.normalizedArtworkMatch().orEmpty()
+        val itemAlbum = obj("album")?.tidalTitle()?.normalizedArtworkMatch().orEmpty()
+        val itemArtists =
+            tidalArtists()
+                .map { it.name.normalizedArtworkMatch() }
+                .filter { it.isNotBlank() }
+
+        var score = 0
+        if (itemTitle == normalizedTitle) {
+            score += 6
+        } else if (
+            itemTitle.isNotBlank() &&
+            (itemTitle.contains(normalizedTitle) || normalizedTitle.contains(itemTitle))
+        ) {
+            score += 3
+        }
+
+        if (normalizedArtist.isNotBlank() && itemArtists.any { it == normalizedArtist }) {
+            score += 5
+        } else if (normalizedArtist.isNotBlank() && itemArtists.any { it.contains(normalizedArtist) || normalizedArtist.contains(it) }) {
+            score += 3
+        }
+
+        if (normalizedAlbum.isNotBlank()) {
+            if (itemAlbum == normalizedAlbum || itemTitle == normalizedAlbum) {
+                score += 3
+            } else if (
+                itemAlbum.isNotBlank() &&
+                (itemAlbum.contains(normalizedAlbum) || normalizedAlbum.contains(itemAlbum))
+            ) {
+                score += 1
+            }
+        }
+
+        return score
+    }
+
+    private fun String.normalizedArtworkMatch(): String =
+        lowercase()
+            .replace(Regex("""\([^)]*\)|\[[^]]*]"""), " ")
+            .replace(Regex("""[^a-z0-9]+"""), " ")
+            .trim()
 
     private fun String.tidalImageUrl(size: String = "640x640"): String? =
         takeIf { it.isNotBlank() }?.let { value ->

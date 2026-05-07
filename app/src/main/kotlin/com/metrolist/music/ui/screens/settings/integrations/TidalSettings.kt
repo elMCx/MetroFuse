@@ -11,11 +11,14 @@ import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
@@ -31,6 +34,7 @@ import androidx.compose.ui.unit.dp
 import androidx.navigation.NavController
 import com.metrolist.music.LocalPlayerAwareWindowInsets
 import com.metrolist.music.R
+import com.metrolist.music.constants.TidalArtworkFallbackEnabledKey
 import com.metrolist.music.constants.TidalCookieKey
 import com.metrolist.music.ui.component.IconButton
 import com.metrolist.music.ui.component.InfoLabel
@@ -47,6 +51,8 @@ import com.metrolist.music.utils.tidal.normalizeTidalCookieInput
 fun TidalSettings(
     navController: NavController,
 ) {
+    val (tidalArtworkFallbackEnabled, onTidalArtworkFallbackEnabledChange) =
+        rememberPreference(TidalArtworkFallbackEnabledKey, false)
     var tidalCookie by rememberPreference(TidalCookieKey, "")
     val cookieConfigured = isTidalCookieConfigured(tidalCookie)
     var showCookieDialog by rememberSaveable { mutableStateOf(false) }
@@ -92,6 +98,30 @@ fun TidalSettings(
             title = stringResource(R.string.general),
             items =
                 listOf(
+                    Material3SettingsItem(
+                        title = { Text(stringResource(R.string.tidal_artwork_fallback)) },
+                        description = { Text(stringResource(R.string.tidal_artwork_fallback_desc)) },
+                        trailingContent = {
+                            Switch(
+                                checked = tidalArtworkFallbackEnabled,
+                                onCheckedChange = onTidalArtworkFallbackEnabledChange,
+                                thumbContent = {
+                                    Icon(
+                                        painter =
+                                            painterResource(
+                                                id = if (tidalArtworkFallbackEnabled) R.drawable.check else R.drawable.close,
+                                            ),
+                                        contentDescription = null,
+                                        modifier = Modifier.size(SwitchDefaults.IconSize),
+                                    )
+                                },
+                            )
+                        },
+                        icon = painterResource(R.drawable.album),
+                        onClick = {
+                            onTidalArtworkFallbackEnabledChange(!tidalArtworkFallbackEnabled)
+                        },
+                    ),
                     Material3SettingsItem(
                         title = { Text(stringResource(R.string.tidal_web_login)) },
                         description = {

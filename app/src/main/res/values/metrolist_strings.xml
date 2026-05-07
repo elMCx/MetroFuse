@@ -479,6 +479,8 @@
     <string name="tidal_cookie_not_configured">No TIDAL auth configured</string>
     <string name="tidal_clear_cookie">Clear TIDAL auth</string>
     <string name="tidal_cookie_saved">TIDAL auth saved.</string>
+    <string name="tidal_artwork_fallback">High quality album covers</string>
+    <string name="tidal_artwork_fallback_desc">Use TIDAL album artwork in the player when no Spotify or Apple animated canvas is available</string>
 
     <string name="scrobbling_configuration">Scrobbling configuration</string>
     <string name="scrobble_min_track_duration">Scrobble songs longer than (seconds)</string>

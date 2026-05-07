@@ -87,6 +87,7 @@ import com.metrolist.music.constants.PlayerHorizontalPadding
 import com.metrolist.music.constants.SeekExtraSeconds
 import com.metrolist.music.constants.SwipeThumbnailKey
 import com.metrolist.music.constants.ThumbnailCornerRadius
+import com.metrolist.music.constants.TidalArtworkFallbackEnabledKey
 import com.metrolist.music.listentogether.RoomRole
 import com.metrolist.music.ui.component.CastButton
 import com.metrolist.music.utils.rememberEnumPreference
@@ -220,6 +221,7 @@ fun Thumbnail(
     val canSkipPrevious by playerConnection.canSkipPrevious.collectAsStateWithLifecycle()
     val canSkipNext by playerConnection.canSkipNext.collectAsStateWithLifecycle()
     val appleCanvasUrl by playerConnection.service.currentAppleCanvasUrl.collectAsStateWithLifecycle()
+    val tidalArtworkUrl by playerConnection.service.currentTidalArtworkUrl.collectAsStateWithLifecycle()
 
     // Preferences - computed once
     // Disable swipe for Listen Together guests
@@ -227,6 +229,7 @@ fun Thumbnail(
     val swipeThumbnail = swipeThumbnailPref && !isListenTogetherGuest
     val hidePlayerThumbnail by rememberPreference(HidePlayerThumbnailKey, false)
     val cropAlbumArt by rememberPreference(CropAlbumArtKey, false)
+    val tidalArtworkFallbackEnabled by rememberPreference(TidalArtworkFallbackEnabledKey, false)
     val playerBackground by rememberEnumPreference(
         key = PlayerBackgroundStyleKey,
         defaultValue = PlayerBackgroundStyle.DEFAULT
@@ -412,6 +415,9 @@ fun Thumbnail(
                                 currentMediaId = mediaMetadata?.id,
                                 currentMediaThumbnail = mediaMetadata?.thumbnailUrl,
                                 currentAppleCanvasUrl = appleCanvasUrl,
+                                currentTidalArtworkUrl =
+                                    tidalArtworkUrl
+                                        .takeIf { tidalArtworkFallbackEnabled && appleCanvasUrl.isNullOrBlank() },
                             )
                         }
                     }
@@ -510,6 +516,7 @@ private fun ThumbnailItem(
     currentMediaId: String? = null,
     currentMediaThumbnail: String? = null,
     currentAppleCanvasUrl: String? = null,
+    currentTidalArtworkUrl: String? = null,
     modifier: Modifier = Modifier,
 ) {
     val incrementalSeekSkipEnabled by rememberPreference(SeekExtraSeconds, defaultValue = false)
@@ -573,11 +580,12 @@ private fun ThumbnailItem(
             if (hidePlayerThumbnail) {
                 HiddenThumbnailPlaceholder(textBackgroundColor = textBackgroundColor)
             } else {
-                val artworkUriToUse = if (item.mediaId == currentMediaId && !currentMediaThumbnail.isNullOrBlank()) {
-                    currentMediaThumbnail
-                } else {
-                    item.mediaMetadata.artworkUri?.toString()
-                }
+                val artworkUriToUse =
+                    when {
+                        item.mediaId == currentMediaId && !currentTidalArtworkUrl.isNullOrBlank() -> currentTidalArtworkUrl
+                        item.mediaId == currentMediaId && !currentMediaThumbnail.isNullOrBlank() -> currentMediaThumbnail
+                        else -> item.mediaMetadata.artworkUri?.toString()
+                    }
 
                 if (item.mediaId == currentMediaId && !currentAppleCanvasUrl.isNullOrBlank()) {
                     AppleMusicCanvasVideo(
