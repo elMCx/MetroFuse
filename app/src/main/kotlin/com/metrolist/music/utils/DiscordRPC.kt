@@ -49,8 +49,6 @@ class DiscordRPC(
         button2Visible: Boolean = true,
         activityType: String = "listening",
         activityName: String = "",
-        largeImageUrl: String? = song.song.thumbnailUrl,
-        largeImageFallbackUrl: String? = song.song.thumbnailUrl,
     ) = runCatching {
         val currentTime = System.currentTimeMillis()
 
@@ -101,8 +99,7 @@ class DiscordRPC(
                 start = calculatedStartTime,
                 end = currentTime + adjustedRemainingDuration,
             ),
-            largeImage = largeImageUrl,
-            largeImageFallback = largeImageFallbackUrl,
+            largeImage = song.song.thumbnailUrl,
             smallImage = song.artists.firstOrNull()?.thumbnailUrl,
             largeText = song.album?.title,
             smallText = song.artists.firstOrNull()?.name,

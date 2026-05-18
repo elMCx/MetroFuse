@@ -126,7 +126,6 @@ import com.metrolist.music.constants.DisableLoadMoreWhenRepeatAllKey
 import com.metrolist.music.constants.DiscordActivityNameKey
 import com.metrolist.music.constants.DiscordActivityTypeKey
 import com.metrolist.music.constants.DiscordAdvancedModeKey
-import com.metrolist.music.constants.DiscordAnimatedCoversKey
 import com.metrolist.music.constants.DiscordAvatarKey
 import com.metrolist.music.constants.DiscordButton1TextKey
 import com.metrolist.music.constants.DiscordButton1VisibleKey
@@ -253,7 +252,6 @@ import com.metrolist.music.utils.NetworkConnectivityObserver
 import com.metrolist.music.utils.ScrobbleManager
 import com.metrolist.music.utils.SyncUtils
 import com.metrolist.music.utils.dataStore
-import com.metrolist.music.utils.discord.DiscordCanvasServerConverter
 import com.metrolist.music.utils.get
 import com.metrolist.music.utils.reportException
 import com.metrolist.music.widget.MetrolistWidgetManager
@@ -590,30 +588,10 @@ class MusicService :
         val tempFilePath: String? = null,
     )
 
-    private data class DiscordPresenceArtwork(
-        val imageUrl: String?,
-        val fallbackUrl: String?,
-    )
-
-    private data class CachedDiscordAnimatedCover(
-        val animatedUrl: String?,
-        val expiresAtMs: Long,
-    )
-
     // URL cache for stream URLs - class-level so it can be invalidated on errors
     private val songUrlCache = HashMap<String, CachedSongStream>()
     private val audioFormatRetryJobs = ConcurrentHashMap<String, Job>()
-    private val discordAnimatedCoverCache = ConcurrentHashMap<String, CachedDiscordAnimatedCover>()
-    private val discordAnimatedCoverRetryJobs = ConcurrentHashMap<String, Job>()
-    private val discordAnimatedCoverRetryCounts = ConcurrentHashMap<String, Int>()
     private val appleCanvasPrefetchMediaIds = ConcurrentHashMap.newKeySet<String>()
-    private val discordAnimatedCoverClient by lazy {
-        OkHttpClient
-            .Builder()
-            .connectTimeout(8, java.util.concurrent.TimeUnit.SECONDS)
-            .readTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
-            .build()
-    }
 
     // Flag to bypass cache when quality changes - forces fresh stream fetch
     private val bypassCacheForQualityChange = mutableSetOf<String>()
@@ -1105,7 +1083,6 @@ class MusicService :
             .map {
                 listOf(
                     it[DiscordUseDetailsKey],
-                    it[DiscordAnimatedCoversKey],
                     it[DiscordAdvancedModeKey],
                     it[DiscordStatusKey],
                     it[DiscordButton1TextKey],
@@ -3819,7 +3796,6 @@ class MusicService :
         showFeedback: Boolean = false,
     ) {
         val useDetails = dataStore.get(DiscordUseDetailsKey, false)
-        val useAnimatedCovers = dataStore.get(DiscordAnimatedCoversKey, false)
         val advancedMode = dataStore.get(DiscordAdvancedModeKey, false)
 
         val status = if (advancedMode) dataStore.get(DiscordStatusKey, "online") else "online"
@@ -3835,204 +3811,35 @@ class MusicService :
         discordUpdateJob?.cancel()
         discordUpdateJob =
             scope.launch {
-                val staticArtwork = discordStaticPresenceArtwork(song)
                 if (discordUpdateGeneration.get() != updateGeneration || currentSong.value?.song?.id != mediaId) {
                     return@launch
                 }
-
-                suspend fun sendPresence(
-                    artwork: DiscordPresenceArtwork,
-                    showFailureToast: Boolean,
-                ) {
-                    discordRpc
-                        ?.updateSong(
-                            song,
-                            player.currentPosition,
-                            player.playbackParameters.speed,
-                            useDetails,
-                            status,
-                            b1Text,
-                            b1Visible,
-                            b2Text,
-                            b2Visible,
-                            activityType,
-                            activityName,
-                            artwork.imageUrl,
-                            artwork.fallbackUrl,
-                        )?.onFailure {
-                            if (showFailureToast) {
-                                Handler(Looper.getMainLooper()).post {
-                                    Toast
-                                        .makeText(
-                                            this@MusicService,
-                                            "Discord RPC update failed: ${it.message}",
-                                            Toast.LENGTH_SHORT,
-                                        ).show()
-                                }
+                discordRpc
+                    ?.updateSong(
+                        song,
+                        player.currentPosition,
+                        player.playbackParameters.speed,
+                        useDetails,
+                        status,
+                        b1Text,
+                        b1Visible,
+                        b2Text,
+                        b2Visible,
+                        activityType,
+                        activityName,
+                    )?.onFailure {
+                        if (showFeedback) {
+                            Handler(Looper.getMainLooper()).post {
+                                Toast
+                                    .makeText(
+                                        this@MusicService,
+                                        "Discord RPC update failed: ${it.message}",
+                                        Toast.LENGTH_SHORT,
+                                    ).show()
                             }
                         }
-                }
-
-                sendPresence(staticArtwork, showFeedback)
-                if (!useAnimatedCovers) return@launch
-
-                val animatedArtwork = resolveDiscordPresenceArtwork(
-                    song = song,
-                    useAnimatedCovers = true,
-                    staticArtwork = staticArtwork,
-                )
-                if (discordUpdateGeneration.get() != updateGeneration || currentSong.value?.song?.id != mediaId) {
-                    return@launch
-                }
-                if (animatedArtwork != staticArtwork) {
-                    sendPresence(animatedArtwork, showFailureToast = false)
-                }
+                    }
             }
-    }
-
-    private fun discordStaticPresenceArtwork(song: Song): DiscordPresenceArtwork {
-        val staticUrl =
-            currentPreferredArtworkUrl.value
-                .takeIf { currentMediaMetadata.value?.id == song.song.id }
-                ?.takeIf { !it.isNullOrBlank() }
-                ?: song.song.thumbnailUrl
-        return DiscordPresenceArtwork(staticUrl, staticUrl)
-    }
-
-    private suspend fun resolveDiscordPresenceArtwork(
-        song: Song,
-        useAnimatedCovers: Boolean,
-        staticArtwork: DiscordPresenceArtwork = discordStaticPresenceArtwork(song),
-    ): DiscordPresenceArtwork {
-        val staticUrl = staticArtwork.imageUrl ?: song.song.thumbnailUrl
-        if (!useAnimatedCovers || song.song.isLocal || song.song.isEpisode || song.song.isVideo) {
-            return staticArtwork
-        }
-
-        val mediaId = song.song.id
-        val now = System.currentTimeMillis()
-        val artist = song.orderedArtists.firstOrNull()?.name?.takeIf { it.isNotBlank() }
-            ?: return DiscordPresenceArtwork(staticUrl, staticUrl)
-        val album = song.album?.title ?: song.song.albumName
-        val currentCanvas =
-            currentAppleCanvasUrl.value
-                .takeIf { currentMediaMetadata.value?.id == mediaId }
-                ?.takeIf { !it.isNullOrBlank() }
-        val cachedCanvas =
-            currentCanvas
-                ?: AppleMusicCanvasProvider
-                    .getCached(
-                        song = song.song.title,
-                        artist = artist,
-                        album = album,
-                        explicit = song.song.explicit.takeIf { it },
-                    )?.animated
-                    ?.takeIf { it.isNotBlank() }
-        val resolvedCanvas =
-            cachedCanvas
-                ?: withTimeoutOrNull(6_500L) {
-                    AppleMusicCanvasProvider
-                        .getBySongArtist(
-                            song = song.song.title,
-                            artist = artist,
-                            album = album,
-                            explicit = song.song.explicit.takeIf { it },
-                        )?.animated
-                        ?.takeIf { it.isNotBlank() }
-                }
-
-        val cacheKey = "$mediaId::${resolvedCanvas?.hashCode() ?: "none"}"
-        discordAnimatedCoverCache[cacheKey]
-            ?.takeIf { it.expiresAtMs > now }
-            ?.let { cached ->
-                return DiscordPresenceArtwork(
-                    imageUrl = cached.animatedUrl ?: staticUrl,
-                    fallbackUrl = if (cached.animatedUrl == null) staticUrl else null,
-                )
-            }
-
-        val animatedUrl =
-            when {
-                resolvedCanvas == null -> null
-                resolvedCanvas.isDiscordAnimatedPresenceImage() -> resolvedCanvas
-                resolvedCanvas.isAppleHlsCanvasUrl() -> prepareDiscordAnimatedCover(resolvedCanvas, pollAttempts = 1)
-                else -> null
-            }
-        val expiresInMs =
-            when {
-                animatedUrl != null -> 1000L * 60 * 60 * 24
-                resolvedCanvas != null -> 1000L * 4
-                else -> 1000L * 60
-            }
-        discordAnimatedCoverCache.keys
-            .filter { it.startsWith("$mediaId::") && it != cacheKey }
-            .forEach(discordAnimatedCoverCache::remove)
-        discordAnimatedCoverCache[cacheKey] = CachedDiscordAnimatedCover(
-            animatedUrl = animatedUrl,
-            expiresAtMs = now + expiresInMs,
-        )
-        if (animatedUrl != null) {
-            discordAnimatedCoverRetryCounts.remove(mediaId)
-            discordAnimatedCoverRetryJobs.remove(mediaId)?.cancel()
-        } else if (resolvedCanvas != null) {
-            scheduleDiscordAnimatedCoverRetry(song, mediaId)
-        }
-
-        return DiscordPresenceArtwork(
-            imageUrl = animatedUrl ?: staticUrl,
-            fallbackUrl = if (animatedUrl == null) staticUrl else null,
-        )
-    }
-
-    private fun scheduleDiscordAnimatedCoverRetry(
-        song: Song,
-        mediaId: String,
-    ) {
-        if (discordAnimatedCoverRetryJobs[mediaId]?.isActive == true) return
-
-        val attempt = (discordAnimatedCoverRetryCounts[mediaId] ?: 0) + 1
-        if (attempt > 4) return
-        discordAnimatedCoverRetryCounts[mediaId] = attempt
-
-        discordAnimatedCoverRetryJobs[mediaId] =
-            scope.launch {
-                delay(5_000L * attempt)
-                discordAnimatedCoverRetryJobs.remove(mediaId)
-                if (currentSong.value?.song?.id != mediaId) return@launch
-                if (!dataStore.get(EnableDiscordRPCKey, true) || !dataStore.get(DiscordAnimatedCoversKey, false)) {
-                    return@launch
-                }
-                discordAnimatedCoverCache.keys
-                    .filter { it.startsWith("$mediaId::") }
-                    .forEach(discordAnimatedCoverCache::remove)
-                updateDiscordRPC(song)
-            }
-    }
-
-    private suspend fun prepareDiscordAnimatedCover(
-        canvasUrl: String,
-        pollAttempts: Int = 2,
-    ): String? {
-        val resolverUrl = dataStore.get(DeezerResolverUrlKey, DeezerAudioProvider.DEFAULT_RESOLVER_URL)
-        return DiscordCanvasServerConverter.prepare(
-            canvasUrl = canvasUrl,
-            resolverUrl = resolverUrl,
-            client = discordAnimatedCoverClient,
-            pollAttempts = pollAttempts,
-        )
-    }
-
-    private fun String.isAppleHlsCanvasUrl(): Boolean {
-        val parsed = toHttpUrlOrNull() ?: return false
-        val host = parsed.host
-        return parsed.scheme == "https" &&
-            parsed.encodedPath.endsWith(".m3u8", ignoreCase = true) &&
-            (host == "mvod.itunes.apple.com" || host.endsWith(".mvod.itunes.apple.com"))
-    }
-
-    private fun String.isDiscordAnimatedPresenceImage(): Boolean {
-        val path = toHttpUrlOrNull()?.encodedPath?.lowercase(Locale.US) ?: return false
-        return path.endsWith(".gif") || path.endsWith(".webp") || path.endsWith(".avif")
     }
 
     private fun upsertAppleWrapperFormat(mediaId: String) {
@@ -5088,22 +4895,6 @@ class MusicService :
                     explicit = metadata.explicit.takeIf { it },
                     preferredAspect = AppleMusicCanvasProvider.CanvasAspectPreference.TALL,
                 )
-                val canvasUrl =
-                    withTimeoutOrNull(6_500L) {
-                        AppleMusicCanvasProvider.getBySongArtist(
-                            song = metadata.title,
-                            artist = artist,
-                            album = metadata.album?.title,
-                            explicit = metadata.explicit.takeIf { it },
-                        )?.animated
-                    }?.takeIf { it.isNotBlank() }
-
-                if (canvasUrl?.isAppleHlsCanvasUrl() == true &&
-                    dataStore.get(EnableDiscordRPCKey, true) &&
-                    dataStore.get(DiscordAnimatedCoversKey, false)
-                ) {
-                    prepareDiscordAnimatedCover(canvasUrl, pollAttempts = 0)
-                }
             }
         }
     }

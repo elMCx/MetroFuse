@@ -48,7 +48,6 @@ class DiscordRpcConnection(
         details: String? = null,
         timestamps: Timestamps? = null,
         largeImage: String? = null,
-        largeImageFallback: String? = null,
         largeText: String? = null,
         smallImage: String? = null,
         smallText: String? = null,
@@ -66,7 +65,7 @@ class DiscordRpcConnection(
 
         val resolvedLargeImage = largeImage?.let {
             Timber.tag(tag).v("Resolving large image: $it")
-            resolveImage(it, largeImageFallback).also { result ->
+            resolveImage(it).also { result ->
                 Timber.tag(tag).v("Large image resolved: $result")
             }
         }
@@ -131,10 +130,7 @@ class DiscordRpcConnection(
         httpClient.close()
     }
 
-    private suspend fun resolveImage(
-        image: String,
-        fallbackImage: String? = null,
-    ): String? {
+    private suspend fun resolveImage(image: String): String? {
         return if (image.startsWith("mp:") || image.startsWith("http")) {
             ArtworkCache.getOrFetch(image) {
                 if (image.startsWith("mp:")) {
@@ -155,29 +151,13 @@ class DiscordRpcConnection(
                     } else {
                         Timber.tag(tag).w("External asset upload failed for: $image, using raw URL")
                     }
-                    asset ?: fallbackImage
-                        ?.takeIf { it.isNotBlank() && it != image }
-                        ?.let { fallback ->
-                            ArtworkCache.getOrFetch(fallback) { fetchExternalImage(fallback) }
-                                ?: fallback.takeIf { it.startsWith("http") }
-                        }
-                        ?: image
+                    asset ?: image
                 }
             }
         } else {
             "mp:$image"
         }
     }
-
-    private suspend fun fetchExternalImage(imageUrl: String): String? =
-        fetchExternalAsset(
-            client = httpClient,
-            applicationId = APPLICATION_ID,
-            token = token,
-            imageUrl = imageUrl,
-            userAgent = userAgent,
-            superPropertiesBase64 = superPropertiesBase64,
-        )
 
     companion object {
         private const val APPLICATION_ID = "1411019391843172514"

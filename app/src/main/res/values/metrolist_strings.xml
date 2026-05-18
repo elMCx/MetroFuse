@@ -217,9 +217,6 @@
     <string name="enable_authentication">Enable authentication</string>
     <string name="discord_use_details">Use details instead of state</string>
     <string name="discord_use_details_description">Show the song title prominently instead of the artist name</string>
-    <string name="discord_animated_covers">Animated Apple covers</string>
-    <string name="discord_animated_covers_description">Try Apple Music motion art in Discord Rich Presence and fall back to static covers when Discord cannot use it.</string>
-
     <string name="enable_similar_content">Enable similar content</string>
     <string name="similar_content_desc">Automatically adds more similar songs when the end of the queue is reached</string>
     <string name="persistent_shuffle_title">Persistent shuffle</string>

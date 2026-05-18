@@ -77,7 +77,6 @@ import com.metrolist.music.R
 import com.metrolist.music.constants.DiscordActivityNameKey
 import com.metrolist.music.constants.DiscordActivityTypeKey
 import com.metrolist.music.constants.DiscordAdvancedModeKey
-import com.metrolist.music.constants.DiscordAnimatedCoversKey
 import com.metrolist.music.constants.DiscordAvatarKey
 import com.metrolist.music.constants.DiscordButton1TextKey
 import com.metrolist.music.constants.DiscordButton1VisibleKey
@@ -138,7 +137,6 @@ fun DiscordSettings(
 
     val (discordRPC, onDiscordRPCChange) = rememberPreference(EnableDiscordRPCKey, true)
     val (useDetails, onUseDetailsChange) = rememberPreference(DiscordUseDetailsKey, false)
-    val (animatedCovers, onAnimatedCoversChange) = rememberPreference(DiscordAnimatedCoversKey, false)
     val (advancedMode, onAdvancedModeChange) = rememberPreference(DiscordAdvancedModeKey, false)
 
     var discordStatus by rememberPreference(DiscordStatusKey, "online")
@@ -607,32 +605,6 @@ fun DiscordSettings(
                         enabled = isLoggedIn && discordRPC,
                         onClick = {
                             if (isLoggedIn && discordRPC) onUseDetailsChange(!useDetails)
-                        },
-                    ),
-                    Material3SettingsItem(
-                        title = { Text(stringResource(R.string.discord_animated_covers)) },
-                        description = {
-                            Text(stringResource(R.string.discord_animated_covers_description))
-                        },
-                        trailingContent = {
-                            Switch(
-                                checked = animatedCovers,
-                                onCheckedChange = onAnimatedCoversChange,
-                                enabled = isLoggedIn && discordRPC,
-                                thumbContent = {
-                                    Icon(
-                                        painter = painterResource(
-                                            id = if (animatedCovers) R.drawable.check else R.drawable.close
-                                        ),
-                                        contentDescription = null,
-                                        modifier = Modifier.size(SwitchDefaults.IconSize),
-                                    )
-                                }
-                            )
-                        },
-                        enabled = isLoggedIn && discordRPC,
-                        onClick = {
-                            if (isLoggedIn && discordRPC) onAnimatedCoversChange(!animatedCovers)
                         },
                     ),
                     Material3SettingsItem(
