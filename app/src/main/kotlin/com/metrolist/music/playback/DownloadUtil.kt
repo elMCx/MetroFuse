@@ -18,10 +18,15 @@ import androidx.media3.exoplayer.offline.DownloadNotificationHelper
 import com.metrolist.music.apple.AppleMusicAwareDataSourceFactory
 import com.metrolist.music.apple.AppleMusicSongResolver
 import com.metrolist.music.apple.AppleMusicWrapperDataSource
+import com.metrolist.music.apple.AppleMusicWrapperManagerProvider
 import com.metrolist.music.constants.AppleMusicFallbackEnabledKey
+import com.metrolist.music.constants.AppleMusicWrapperHostKey
+import com.metrolist.music.constants.AppleMusicWrapperSecureKey
 import com.metrolist.music.constants.AudioProviderOrder
 import com.metrolist.music.constants.AudioProviderOrderItem
 import com.metrolist.music.constants.AudioProviderOrderKey
+import com.metrolist.music.constants.AppleMusicForceAlacKey
+import com.metrolist.music.constants.AppleMusicSuperFastKey
 import com.metrolist.music.constants.DeezerAudioQuality
 import com.metrolist.music.constants.DeezerAudioQualityKey
 import com.metrolist.music.constants.DeezerResolverUrlKey
@@ -266,6 +271,10 @@ constructor(
 
     private fun currentStreamSelectionKey(context: Context): String {
         val appleMusicFallbackEnabled = context.dataStore.get(AppleMusicFallbackEnabledKey, true)
+        val appleMusicForceAlac = context.dataStore.get(AppleMusicForceAlacKey, false)
+        val appleMusicSuperFast = context.dataStore.get(AppleMusicSuperFastKey, false)
+        val appleWrapperHost = context.dataStore.get(AppleMusicWrapperHostKey, AppleMusicWrapperManagerProvider.DEFAULT_HOST)
+        val appleWrapperSecure = context.dataStore.get(AppleMusicWrapperSecureKey, true)
         val deezerResolverUrl = context.dataStore.get(DeezerResolverUrlKey, DeezerAudioProvider.DEFAULT_RESOLVER_URL)
         val deezerQuality = context.dataStore.get(DeezerAudioQualityKey).toEnum(DeezerAudioQuality.MP3_128)
         val audioProviderOrder = AudioProviderOrder.deserialize(context.dataStore.get(AudioProviderOrderKey, ""))
@@ -287,6 +296,10 @@ constructor(
             ?: "US"
         return listOf(
             "appleFallback=$appleMusicFallbackEnabled",
+            "appleForceAlac=$appleMusicForceAlac",
+            "appleSuperFast=$appleMusicSuperFast",
+            "appleWrapperHost=${appleWrapperHost.hashCode()}",
+            "appleWrapperSecure=$appleWrapperSecure",
             "deezerResolver=${deezerResolverUrl.hashCode()}",
             "deezerQuality=${deezerQuality.name}",
             "providerOrder=${audioProviderOrder.joinToString(",") { it.name }}",
@@ -307,6 +320,10 @@ constructor(
         song: Song?,
     ): DownloadStreamResolution {
         val appleMusicFallbackEnabled = context.dataStore.get(AppleMusicFallbackEnabledKey, true)
+        val appleMusicForceAlac = context.dataStore.get(AppleMusicForceAlacKey, false)
+        val appleMusicSuperFast = context.dataStore.get(AppleMusicSuperFastKey, false)
+        val appleWrapperHost = context.dataStore.get(AppleMusicWrapperHostKey, AppleMusicWrapperManagerProvider.DEFAULT_HOST)
+        val appleWrapperSecure = context.dataStore.get(AppleMusicWrapperSecureKey, true)
         val deezerResolverUrl = context.dataStore.get(DeezerResolverUrlKey, DeezerAudioProvider.DEFAULT_RESOLVER_URL)
         val deezerQuality = context.dataStore.get(DeezerAudioQualityKey).toEnum(DeezerAudioQuality.MP3_128)
         val audioProviderOrder = AudioProviderOrder.deserialize(context.dataStore.get(AudioProviderOrderKey, ""))
@@ -324,17 +341,20 @@ constructor(
 
         fun canAttemptOrderedProvider(provider: AudioProviderOrderItem): Boolean =
             when (provider) {
-                AudioProviderOrderItem.APPLE_MUSIC -> appleMusicFallbackEnabled
+                AudioProviderOrderItem.APPLE_MUSIC -> appleMusicFallbackEnabled || appleMusicForceAlac
                 AudioProviderOrderItem.INSTAGRAM -> instagramCookie.isNotBlank()
                 else -> true
             }
 
         fun AppleMusicSongResolver.Resolved.toDownloadResolution(): DownloadStreamResolution =
             DownloadStreamResolution(
-                uri = AppleMusicWrapperDataSource.toProgressiveStreamUri(mediaUri.toUri()).toString(),
+                uri = AppleMusicWrapperDataSource.toProgressiveStreamUri(
+                    uri = mediaUri.toUri(),
+                    highWorkerMode = appleMusicSuperFast,
+                ).toString(),
                 expiresAtMs = expiresAtMs,
                 cacheKey = appleWrapperCacheKey(mediaId),
-                format = appleWrapperFormat(mediaId, sampleRate = sampleRate),
+                format = appleWrapperFormat(mediaId, bitrate = bitrate, sampleRate = sampleRate),
             )
 
         fun QobuzAudioProvider.Resolved.toDownloadResolution(): DownloadStreamResolution =
@@ -370,7 +390,9 @@ constructor(
             )
 
         var appleAttempt: Result<AppleMusicSongResolver.Resolved> =
-            if (appleMusicFallbackEnabled) {
+            if (appleMusicForceAlac) {
+                Result.failure(IllegalStateException("Apple Music ALAC not attempted yet"))
+            } else if (appleMusicFallbackEnabled) {
                 Result.failure(IllegalStateException("Apple Music not attempted yet"))
             } else {
                 Result.failure(IllegalStateException("Apple Music fallback disabled"))
@@ -386,11 +408,16 @@ constructor(
         var qobuzAttempt: Result<QobuzAudioProvider.Resolved> =
             Result.failure(IllegalStateException("Qobuz not attempted yet"))
         val attemptedProviders = mutableSetOf<AudioProviderOrderItem>()
-        val orderedProviders = buildList {
-            if (directSoundCloudMediaId) add(AudioProviderOrderItem.SOUNDCLOUD)
-            if (directDeezerMediaId) add(AudioProviderOrderItem.DEEZER)
-            addAll(audioProviderOrder)
-        }.distinct()
+        val orderedProviders =
+            if (appleMusicForceAlac) {
+                listOf(AudioProviderOrderItem.APPLE_MUSIC)
+            } else {
+                buildList {
+                    if (directSoundCloudMediaId) add(AudioProviderOrderItem.SOUNDCLOUD)
+                    if (directDeezerMediaId) add(AudioProviderOrderItem.DEEZER)
+                    addAll(audioProviderOrder)
+                }.distinct()
+            }
 
         suspend fun attemptProvider(provider: AudioProviderOrderItem): DownloadStreamResolution? {
             if (provider in attemptedProviders) return null
@@ -462,7 +489,15 @@ constructor(
                 AudioProviderOrderItem.APPLE_MUSIC -> {
                     attemptedProviders += provider
                     appleAttempt = runCatching {
-                        AppleMusicSongResolver.resolve(buildAppleMusicQuery(mediaId, song))
+                        AppleMusicSongResolver.resolve(
+                            buildAppleMusicQuery(
+                                mediaId = mediaId,
+                                song = song,
+                                wrapperHost = appleWrapperHost,
+                                wrapperSecure = appleWrapperSecure,
+                                highWorkerMode = appleMusicSuperFast,
+                            ),
+                        )
                     }
                     appleAttempt.getOrNull()?.let { resolved ->
                         return resolved.toDownloadResolution()
@@ -474,6 +509,23 @@ constructor(
 
         for (provider in orderedProviders) {
             attemptProvider(provider)?.let { return it }
+            if (appleMusicForceAlac && provider == AudioProviderOrderItem.APPLE_MUSIC) {
+                val appleError = appleAttempt.exceptionOrNull()
+                    ?: IllegalStateException("Apple Music ALAC did not resolve")
+                throw IllegalStateException(
+                    "Apple Music ALAC failed: ${appleError.message ?: appleError.javaClass.simpleName}",
+                    appleError,
+                )
+            }
+        }
+
+        if (appleMusicForceAlac) {
+            val appleError = appleAttempt.exceptionOrNull()
+                ?: IllegalStateException("Apple Music ALAC was not attempted")
+            throw IllegalStateException(
+                "Apple Music ALAC failed: ${appleError.message ?: appleError.javaClass.simpleName}",
+                appleError,
+            )
         }
 
         if (!attemptedProviders.contains(AudioProviderOrderItem.SOUNDCLOUD) && !directSoundCloudMediaId) {
@@ -533,6 +585,9 @@ constructor(
     private fun buildAppleMusicQuery(
         mediaId: String,
         song: Song?,
+        wrapperHost: String = AppleMusicWrapperManagerProvider.DEFAULT_HOST,
+        wrapperSecure: Boolean = true,
+        highWorkerMode: Boolean = false,
     ): AppleMusicSongResolver.Query {
         return AppleMusicSongResolver.Query(
             mediaId = mediaId,
@@ -545,6 +600,9 @@ constructor(
                 ?.toLong()
                 ?.times(1000L),
             explicit = song?.song?.explicit,
+            wrapperHost = wrapperHost,
+            wrapperSecure = wrapperSecure,
+            highWorkerMode = highWorkerMode,
         )
     }
 

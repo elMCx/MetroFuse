@@ -42,7 +42,6 @@ import com.metrolist.music.constants.AudioNormalizationKey
 import com.metrolist.music.constants.AudioOffload
 import com.metrolist.music.constants.AudioQuality
 import com.metrolist.music.constants.AudioQualityKey
-import com.metrolist.music.constants.AppleMusicFallbackEnabledKey
 import com.metrolist.music.constants.AutoDownloadOnLikeKey
 import com.metrolist.music.constants.CrossfadeDurationKey
 import com.metrolist.music.constants.CrossfadeEnabledKey
@@ -151,10 +150,6 @@ fun PlayerSettings(
     )
     val (audioNormalization, onAudioNormalizationChange) = rememberPreference(
         AudioNormalizationKey,
-        defaultValue = true
-    )
-    val (appleMusicFallbackEnabled, onAppleMusicFallbackEnabledChange) = rememberPreference(
-        AppleMusicFallbackEnabledKey,
         defaultValue = true
     )
     val (qobuzBackend, onQobuzBackendChange) = rememberEnumPreference(
@@ -443,27 +438,6 @@ fun PlayerSettings(
                         )
                     },
                     onClick = { onStopOnProviderErrorChange(!stopOnProviderError) }
-                ))
-                add(Material3SettingsItem(
-                    icon = painterResource(R.drawable.library_music),
-                    title = { Text(stringResource(R.string.apple_music_fallback)) },
-                    description = { Text(stringResource(R.string.apple_music_fallback_desc)) },
-                    trailingContent = {
-                        Switch(
-                            checked = appleMusicFallbackEnabled,
-                            onCheckedChange = onAppleMusicFallbackEnabledChange,
-                            thumbContent = {
-                                Icon(
-                                    painter = painterResource(
-                                        id = if (appleMusicFallbackEnabled) R.drawable.check else R.drawable.close
-                                    ),
-                                    contentDescription = null,
-                                    modifier = Modifier.size(SwitchDefaults.IconSize)
-                                )
-                            }
-                        )
-                    },
-                    onClick = { onAppleMusicFallbackEnabledChange(!appleMusicFallbackEnabled) }
                 ))
                 add(Material3SettingsItem(
                     icon = painterResource(R.drawable.settings),

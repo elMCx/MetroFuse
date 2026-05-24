@@ -180,6 +180,7 @@ import com.metrolist.music.ui.component.SquigglySlider
 import com.metrolist.music.ui.component.WavySlider
 import com.metrolist.music.ui.component.rememberBottomSheetState
 import com.metrolist.music.ui.menu.PlayerMenu
+import com.metrolist.music.ui.menu.ShareSongLinkDialog
 import com.metrolist.music.ui.screens.settings.DarkMode
 import com.metrolist.music.ui.theme.PlayerColorExtractor
 import com.metrolist.music.ui.theme.PlayerSliderColors
@@ -287,9 +288,9 @@ private fun FormatEntity.playerQualityLabel(): String? {
         codecs.contains("mp4a", ignoreCase = true) -> "AAC"
         else -> null
     }
+    val isAlac = codec == "ALAC"
     val bitrate = bitrate
-        .takeIf { it > 0 }
-        ?.takeUnless { codec == "ALAC" }
+        .takeIf { it > 0 && (!isAlac || it.isPlausibleAlacBitrate(sampleRate)) }
         ?.let { "${(it / 1000).coerceAtLeast(1)} kbps" }
     val sampleRate = sampleRate
         ?.takeIf { it > 0 }
@@ -298,6 +299,17 @@ private fun FormatEntity.playerQualityLabel(): String? {
     if (codec == null && bitrate == null && sampleRate == null) return null
     if (codec == "ALAC" && bitrate == null && sampleRate == null) return null
     return listOfNotNull(codec, bitrate, sampleRate).joinToString(" \u2022 ").takeIf { it.isNotBlank() }
+}
+
+private fun Int.isPlausibleAlacBitrate(sampleRate: Int?): Boolean {
+    if (this == 4_000_000) return false
+    val max = when {
+        sampleRate == null -> 6_500_000
+        sampleRate <= 48_000 -> 2_400_000
+        sampleRate <= 96_000 -> 5_500_000
+        else -> 10_000_000
+    }
+    return this in 128_000..max
 }
 
 private fun blendColors(
@@ -447,6 +459,7 @@ fun BottomSheetPlayer(
 
     val playbackState by playerConnection.playbackState.collectAsStateWithLifecycle()
     val mediaMetadata by playerConnection.mediaMetadata.collectAsStateWithLifecycle()
+    var showShareSongLinkDialog by rememberSaveable { mutableStateOf(false) }
     val preferredArtworkUrl by playerConnection.service.currentPreferredArtworkUrl.collectAsStateWithLifecycle()
     val currentSong by playerConnection.currentSong.collectAsStateWithLifecycle(initialValue = null)
     val currentLyrics by playerConnection.currentLyrics.collectAsStateWithLifecycle(initialValue = null)
@@ -455,6 +468,16 @@ fun BottomSheetPlayer(
     val embeddedCanvasUrl by playerConnection.service.currentEmbeddedCanvasUrl.collectAsStateWithLifecycle()
     val currentFormat by playerConnection.currentFormat.collectAsStateWithLifecycle(initialValue = null)
     val serviceCurrentFormat by playerConnection.service.currentPlaybackFormat.collectAsStateWithLifecycle(initialValue = null)
+
+    if (showShareSongLinkDialog) {
+        mediaMetadata?.let { metadata ->
+            ShareSongLinkDialog(
+                mediaMetadata = metadata,
+                onDismiss = { showShareSongLinkDialog = false },
+            )
+        }
+    }
+
     val displayFormat =
         remember(currentFormat, serviceCurrentFormat, mediaMetadata?.id) {
             (serviceCurrentFormat ?: currentFormat)?.takeIf { format ->
@@ -1647,16 +1670,7 @@ fun BottomSheetPlayer(
                             } else {
                                 FilledIconButton(
                                     onClick = {
-                                        val intent =
-                                            Intent().apply {
-                                                action = Intent.ACTION_SEND
-                                                type = "text/plain"
-                                                putExtra(
-                                                    Intent.EXTRA_TEXT,
-                                                    "https://music.youtube.com/watch?v=${mediaMetadata.id}",
-                                                )
-                                            }
-                                        context.startActivity(Intent.createChooser(intent, null))
+                                        showShareSongLinkDialog = true
                                     },
                                     shape = shareShape,
                                     colors =
@@ -1769,16 +1783,7 @@ fun BottomSheetPlayer(
                                         .clip(RoundedCornerShape(24.dp))
                                         .background(textButtonColor)
                                         .clickable {
-                                            val intent =
-                                                Intent().apply {
-                                                    action = Intent.ACTION_SEND
-                                                    type = "text/plain"
-                                                    putExtra(
-                                                        Intent.EXTRA_TEXT,
-                                                        "https://music.youtube.com/watch?v=${mediaMetadata.id}",
-                                                    )
-                                                }
-                                            context.startActivity(Intent.createChooser(intent, null))
+                                            showShareSongLinkDialog = true
                                         },
                             ) {
                                 Icon(

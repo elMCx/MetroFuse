@@ -21,7 +21,13 @@ val DarkModeKey = stringPreferencesKey("darkMode")
 val PureBlackKey = booleanPreferencesKey("pureBlack")
 val PureBlackMiniPlayerKey = booleanPreferencesKey("pureBlackMiniPlayer")
 val MiniPlayerOutlineKey = booleanPreferencesKey("miniPlayerOutline")
+val AppBackgroundStyleKey = stringPreferencesKey("appBackgroundStyle")
 val MiniPlayerBackgroundStyleKey = stringPreferencesKey("miniPlayerBackgroundStyle")
+
+enum class AppBackgroundStyle {
+    DEFAULT,
+    GALAXY,
+}
 
 enum class MiniPlayerBackgroundStyle {
     DEFAULT,
@@ -158,6 +164,10 @@ enum class AudioQuality {
 }
 
 val AppleMusicFallbackEnabledKey = booleanPreferencesKey("appleMusicFallbackEnabled")
+val AppleMusicForceAlacKey = booleanPreferencesKey("appleMusicForceAlac")
+val AppleMusicSuperFastKey = booleanPreferencesKey("appleMusicSuperFast")
+val AppleMusicWrapperHostKey = stringPreferencesKey("appleMusicWrapperHost")
+val AppleMusicWrapperSecureKey = booleanPreferencesKey("appleMusicWrapperSecure")
 val TidalAudioQualityKey = stringPreferencesKey("tidalAudioQuality")
 val TidalAnimatedCoversEnabledKey = booleanPreferencesKey("tidalAnimatedCoversEnabled")
 val DeezerResolverUrlKey = stringPreferencesKey("deezerResolverUrl")
