@@ -143,6 +143,8 @@ import com.metrolist.music.constants.DiscordUseDetailsKey
 import com.metrolist.music.constants.EnableDiscordRPCKey
 import com.metrolist.music.constants.EnableLastFMScrobblingKey
 import com.metrolist.music.constants.EnableSongCacheKey
+import com.metrolist.music.constants.EmbedAnimatedCanvasKey
+import com.metrolist.music.constants.ExperimentalAppleMusicCoverFadeKey
 import com.metrolist.music.constants.HideExplicitKey
 import com.metrolist.music.constants.HideVideoSongsKey
 import com.metrolist.music.constants.HistoryDuration
@@ -848,6 +850,20 @@ class MusicService :
                     launch { updateTidalCanvas(metadata) }
                     launch { updatePreferredArtwork(metadata) }
                 }
+            }
+
+        dataStore.data
+            .map { prefs ->
+                Triple(
+                    prefs[SpotifyCanvasEnabledKey] ?: false,
+                    prefs[EmbedAnimatedCanvasKey] ?: false,
+                    prefs[ExperimentalAppleMusicCoverFadeKey] ?: false,
+                )
+            }
+            .distinctUntilChanged()
+            .collectLatest(scope) {
+                preloadUpcomingAppleCanvases()
+                updateAppleCanvas(currentMediaMetadata.value)
             }
 
         // 4. Watch for EQ profile changes
@@ -5123,7 +5139,7 @@ class MusicService :
 
     private suspend fun updateAppleCanvas(metadata: com.metrolist.music.models.MediaMetadata?) {
         currentEmbeddedCanvasUrl.value = null
-        if (!dataStore.get(SpotifyCanvasEnabledKey, false)) {
+        if (!shouldResolveAppleCanvas()) {
             currentAppleCanvasUrl.value = null
             currentAppleTallCanvasUrl.value = null
             return
@@ -5149,17 +5165,22 @@ class MusicService :
                     return
                 }
         val album = metadata.album?.title
+        val isrc =
+            ProviderIsrc.firstOf(metadata.id)
+                ?: resolveSpotifyIsrcForMatching(metadata.id, song = null, queuedMetadata = metadata)
         val cached = AppleMusicCanvasProvider.getCached(
             song = metadata.title,
             artist = artist,
             album = album,
             explicit = metadata.explicit.takeIf { it },
+            isrc = isrc,
         )?.animated?.takeIf { it.isNotBlank() }
         val cachedTall = AppleMusicCanvasProvider.getCached(
             song = metadata.title,
             artist = artist,
             album = album,
             explicit = metadata.explicit.takeIf { it },
+            isrc = isrc,
             preferredAspect = AppleMusicCanvasProvider.CanvasAspectPreference.TALL,
         )?.animated?.takeIf { it.isNotBlank() }
         if (cached != null) {
@@ -5187,6 +5208,7 @@ class MusicService :
                                     artist = artist,
                                     album = album,
                                     explicit = metadata.explicit.takeIf { it },
+                                    isrc = isrc,
                                 )?.animated?.takeIf { it.isNotBlank() }
                             }
                         }
@@ -5202,6 +5224,7 @@ class MusicService :
                                     artist = artist,
                                     album = album,
                                     explicit = metadata.explicit.takeIf { it },
+                                    isrc = isrc,
                                     preferredAspect = AppleMusicCanvasProvider.CanvasAspectPreference.TALL,
                                 )?.animated?.takeIf { it.isNotBlank() }
                             }
@@ -5219,7 +5242,7 @@ class MusicService :
     }
 
     private fun preloadUpcomingAppleCanvases() {
-        if (!dataStore.get(SpotifyCanvasEnabledKey, false)) return
+        if (!shouldResolveAppleCanvas()) return
         val timeline = player.currentTimeline
         if (timeline.isEmpty || player.mediaItemCount <= 1) return
 
@@ -5261,11 +5284,17 @@ class MusicService :
                     artist = artist,
                     album = metadata.album?.title,
                     explicit = metadata.explicit.takeIf { it },
+                    isrc = ProviderIsrc.firstOf(metadata.id),
                     preferredAspect = AppleMusicCanvasProvider.CanvasAspectPreference.TALL,
                 )
             }
         }
     }
+
+    private fun shouldResolveAppleCanvas(): Boolean =
+        dataStore.get(SpotifyCanvasEnabledKey, false) ||
+            dataStore.get(EmbedAnimatedCanvasKey, false) ||
+            dataStore.get(ExperimentalAppleMusicCoverFadeKey, false)
 
     private suspend fun updateTidalCanvas(metadata: com.metrolist.music.models.MediaMetadata?) {
         currentTidalCanvasUrl.value = null

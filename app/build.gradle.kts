@@ -19,8 +19,8 @@ if (localPropertiesFile.exists()) {
 }
 
 val baseApplicationId = "com.metrofuse.music"
-val metroFuseVersionCode = 410
-val metroFuseVersionName = "4.1"
+val metroFuseVersionCode = 500
+val metroFuseVersionName = "5.0"
 val metroFuseUpdateRepository = "956tris/MetroFuse"
 val applicationIdOverride = System.getenv("METROLIST_APPLICATION_ID")?.takeIf { it.isNotBlank() }
 val appNameOverride = System.getenv("METROLIST_APP_NAME")?.takeIf { it.isNotBlank() }
